@@ -11,11 +11,13 @@
 #include <limits.h>
 #include <unistd.h>
 #include <time.h>
-#include <bpf/bpf.h>
+// #include <bpf/bpf.h>
+#include <bpf/libbpf.h>
 #include "tcpretrans.h"
 #include "tcpretrans.skel.h"
 #include "trace_helpers.h"
 #include "map_helpers.h"
+
 
 #define warn(...) fprintf(stderr, __VA_ARGS__)
 
@@ -28,8 +30,10 @@ static const char argp_program_doc[] =
 	"EXAMPLES:\n"
 	"    tcpretrans             # display all TCP retransmissions\n"
 	// TODO "    tcpconnect -c          # count occurred retransmits per flow\n"
-	// TODO "    tcpconnect -l      	# include tail loss probe attempts\n"
+	"    tcpconnect -l      	# include tail loss probe attempts\n"
 	;
+
+const char* tppath = "/sys/kernel/debug/tracing/events/tcp/tcp_retransmit_skb/id";
 
 const char* TCPSTATE[] = {
 	"ESTABLISHED",
@@ -55,8 +59,10 @@ static void sig_int(int signo)
 
 static const struct argp_option opts[] = {
 	{ "verbose", 'v', NULL, 0, "Verbose debug output" },
-	{ "count", 'c', NULL, 0, "Count connects per src ip and dst ip/port" },
+	// TODO: implement count and lossprobe options
+	// { "count", 'c', NULL, 0, "Count connects per src ip and dst ip/port" },
 	{ "lossprobe", 'l', NULL, 0, "include tail loss probe attempts" },
+	{ "kprobe", 'k', NULL, 0, "force kprobe instead of tracepoint" },
 	{ NULL, 'h', NULL, OPTION_HIDDEN, "Show the full help" },
 	{},
 };
@@ -65,6 +71,7 @@ static struct env {
 	bool verbose;
 	bool count;
 	bool lossprobe;
+	bool kprobe;
 } env = {};
 
 static error_t parse_arg(int key, char *arg, struct argp_state *state)
@@ -81,6 +88,9 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		break;
 	case 'l':
 		env.lossprobe = true;
+		break;
+	case 'k':
+		env.kprobe = true;
 		break;
 	default:
 		return ARGP_ERR_UNKNOWN;
@@ -191,16 +201,12 @@ int main(int argc, char **argv)
 
 	struct ring_buffer *rb = NULL;
 	struct tcpretrans_bpf *obj;
-	int err;
+	int err, tpmissing;
+	struct bpf_program *prog;
 
 	err = argp_parse(&argp, argc, argv, 0, NULL, NULL);
 	if (err)
 		return err;
-
-	if (env.count || env.lossprobe) {
-		warn("count and lossprobe options not yet implemented");
-		return 1;
-	}
 
 	libbpf_set_print(libbpf_print_fn);
 
@@ -214,6 +220,37 @@ int main(int argc, char **argv)
 	if (!obj) {
 		warn("failed to open BPF object\n");
 		return 1;
+	}
+
+	// bpf will load non-existant trace points but fail at the attach stage, so
+	// check to ensure our tp exists before we load it.
+	tpmissing = access(tppath, F_OK);
+
+	if (tpmissing || env.kprobe) {
+		if (!env.kprobe)
+			warn("tcp_retransmit_skb tracepoint not found, falling back to kprobe");
+		prog = bpf_object__find_program_by_name(obj->obj, "tracepoint__tcp__tcp_retransmit_skb");
+		err = bpf_program__set_autoload(prog, false);
+		if (err) {
+			warn("Unable to set autoload for tcp_retransmit_skb\n");
+			return err;
+		}
+	} else {
+		prog = bpf_object__find_program_by_name(obj->obj, "tcp_retransmit_skb");
+		err = bpf_program__set_autoload(prog, false);
+		if (err) {
+			warn("Unable to set autoload for tcp_send_loss_probe\n");
+			return err;
+		}
+	}
+
+	if (!env.lossprobe) {
+		prog = bpf_object__find_program_by_name(obj->obj, "tcp_send_loss_probe");
+		err = bpf_program__set_autoload(prog, false);
+		if (err) {
+			warn("Unable to set autoload for tcp_send_loss_probe\n");
+			return err;
+		}
 	}
 
 	err = tcpretrans_bpf__load(obj);

@@ -8,6 +8,7 @@
 
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_core_read.h>
+#include <bpf/bpf_tracing.h>
 
 #include "tcpretrans.h"
 
@@ -23,7 +24,6 @@ struct {
 
 SEC("tp/tcp/tcp_retransmit_skb")
 int tracepoint__tcp__tcp_retransmit_skb(struct trace_event_raw_tcp_event_sk_skb* ctx) {
-
 	struct event e = {};
 	const struct sock *skp;
 	__u16 dport;
@@ -63,6 +63,62 @@ int tracepoint__tcp__tcp_retransmit_skb(struct trace_event_raw_tcp_event_sk_skb*
 	bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
 				  &e, sizeof(e));
 	return 0;
+}
+
+static int trace_event(struct pt_regs *ctx, struct sock *skp, int type)
+{
+    if (skp == NULL)
+        return 0;
+
+    struct event e = {};
+    __u16 dport;
+    __u16 sport;
+    __u32 family;
+    __u64 pid_tgid;
+    __u32 pid;
+    int state;
+
+    e.type = TLP;
+    pid_tgid = bpf_get_current_pid_tgid();
+    pid = pid_tgid >> 32;
+    e.pid = pid;
+
+    family = BPF_CORE_READ(skp, __sk_common.skc_family);
+    e.af = family;
+
+    BPF_CORE_READ_INTO(&dport, skp, __sk_common.skc_dport);
+    e.dport = dport;
+    BPF_CORE_READ_INTO(&sport, skp, __sk_common.skc_num);
+    e.sport = sport;
+    state = BPF_CORE_READ(skp, __sk_common.skc_state);
+    e.state = state;
+
+    if (family == AF_INET) {
+    	e.saddr_v4 = BPF_CORE_READ(skp, __sk_common.skc_rcv_saddr);
+    	e.daddr_v4 = BPF_CORE_READ(skp, __sk_common.skc_daddr);
+
+    } else if (family == AF_INET6) {
+    	BPF_CORE_READ_INTO(e.saddr_v6, skp,
+    			   __sk_common.skc_v6_rcv_saddr.in6_u.u6_addr32);
+    	BPF_CORE_READ_INTO(e.daddr_v6, skp,
+    			   __sk_common.skc_v6_daddr.in6_u.u6_addr32);
+    }
+    bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
+    			  &e, sizeof(e));
+    return 0;
+}
+
+SEC("kprobe/tcp_send_loss_probe")
+int BPF_KPROBE(tcp_send_loss_probe, struct sock *sk)
+{
+	return trace_event(ctx, sk, TLP);
+}
+
+SEC("kprobe/tcp_retransmit_skb")
+int BPF_KPROBE(tcp_retransmit_skb, struct sock *sk)
+{
+    trace_event(ctx, sk, RETRANSMIT);
+    return 0;
 }
 
 char LICENSE[] SEC("license") = "GPL";
