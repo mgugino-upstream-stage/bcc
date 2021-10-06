@@ -228,6 +228,63 @@ static void sig_handler(int sig)
 {
 }
 
+static void print_map2(struct ksyms *ksyms, struct syms_cache *syms_cache,
+		      struct profile_bpf *obj)
+{
+    struct key_t lookup_key = {}, next_key;
+	const struct ksym *ksym;
+	const struct syms *syms;
+	const struct sym *sym;
+	int err, i, cfd, sfd;
+	unsigned long *ip;
+	__u64 val;
+
+	ip = calloc(env.perf_max_stack_depth, sizeof(*ip));
+	if (!ip) {
+		fprintf(stderr, "failed to alloc ip\n");
+		return;
+	}
+    cfd = bpf_map__fd(obj->maps.counts);
+    sfd = bpf_map__fd(obj->maps.stackmap);
+    while (!bpf_map_get_next_key(cfd, &lookup_key, &next_key)) {
+        err = bpf_map_lookup_elem(cfd, &next_key, &val);
+        if (err < 0) {
+            fprintf(stderr, "failed to lookup info: %d\n", err);
+            goto cleanup;
+        }
+        lookup_key = next_key;
+        if (next_key.user_stack_id >= 0) {
+            if (bpf_map_lookup_elem(sfd, &next_key.user_stack_id, ip) != 0) {
+    			printf("[Missed User Stack];");
+    		} else {
+                syms = syms_cache__get_syms(syms_cache, next_key.tgid);
+        		if (!syms) {
+        			fprintf(stderr, "failed to get syms\n");
+        		} else {
+            		for (i = 0; i < env.perf_max_stack_depth && ip[i]; i++) {
+            			sym = syms__map_addr(syms, ip[i]);
+            			if (sym)
+            				printf("%s;", sym->name);
+            			else
+            				printf("[unknown];");
+            		}
+                }
+            }
+        }
+        if (bpf_map_lookup_elem(sfd, &next_key.kernel_stack_id, ip) != 0) {
+            printf("[Missed Kernel Stack]");
+        } else {
+            for (i = 0; i < env.perf_max_stack_depth && ip[i]; i++) {
+                ksym = ksyms__map_addr(ksyms, ip[i]);
+                printf("%s;", ksym ? ksym->name : "[Unknown]");
+            }
+        }
+        printf("        %llu\n", val);
+    }
+cleanup:
+	free(ip);
+}
+
 static void print_map(struct ksyms *ksyms, struct syms_cache *syms_cache,
 		      struct profile_bpf *obj)
 {
@@ -255,7 +312,7 @@ static void print_map(struct ksyms *ksyms, struct syms_cache *syms_cache,
 		}
 		lookup_key = next_key;
 		if (bpf_map_lookup_elem(sfd, &next_key.kernel_stack_id, ip) != 0) {
-			fprintf(stderr, "    [Missed Kernel Stack]\n");
+			// fprintf(stderr, "    [Missed Kernel Stack]\n");
 			goto print_ustack;
 		}
 		for (i = 0; i < env.perf_max_stack_depth && ip[i]; i++) {
@@ -310,16 +367,6 @@ int main(int argc, char **argv)
 	err = argp_parse(&argp, argc, argv, 0, NULL, NULL);
 	if (err)
 		return err;
-    /*
-	if (env.user_threads_only && env.kernel_threads_only) {
-		fprintf(stderr, "user_threads_only and kernel_threads_only cannot be used together.\n");
-		return 1;
-	}
-	if (env.min_block_time >= env.max_block_time) {
-		fprintf(stderr, "min_block_time should be smaller than max_block_time\n");
-		return 1;
-	}
-    */
 
 	libbpf_set_print(libbpf_print_fn);
 
@@ -377,13 +424,7 @@ int main(int argc, char **argv)
 		fprintf(stderr, "failed to create syms_cache\n");
 		goto cleanup;
 	}
-    /*
-	err = profile_bpf__attach(obj);
-	if (err) {
-		fprintf(stderr, "failed to attach BPF programs\n");
-		goto cleanup;
-	}
-    */
+
     err = open_and_attach_perf_event(env.freq, obj->progs.do_perf_event, links);
     if (err)
         goto cleanup;
@@ -396,7 +437,7 @@ int main(int argc, char **argv)
 	 */
 	sleep(10);
 
-	print_map(ksyms, syms_cache, obj);
+	print_map2(ksyms, syms_cache, obj);
 
 cleanup:
 	profile_bpf__destroy(obj);
