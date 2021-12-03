@@ -35,6 +35,8 @@ int do_perf_event(struct bpf_perf_event_data *ctx) {
     static __u64 zero;
     key.tgid =  bpf_get_current_pid_tgid();
     key.pid = bpf_get_current_pid_tgid() >> 32;
+    if (!(key.pid == 1108073))
+        return 0;
     bpf_get_current_comm(key.name, sizeof(key.name));
 
     key.user_stack_id = bpf_get_stackid(ctx, &stackmap, BPF_F_USER_STACK);

@@ -39,7 +39,7 @@ static struct env {
 	.max_block_time = -1,
 	.state = -1,
 	.duration = 99999999,
-    .freq = 99,
+    .freq = 999,
 };
 
 static volatile bool exiting;
@@ -235,7 +235,7 @@ static void print_map2(struct ksyms *ksyms, struct syms_cache *syms_cache,
 	const struct ksym *ksym;
 	const struct syms *syms;
 	const struct sym *sym;
-	int err, i, cfd, sfd;
+	int err, i, cfd, sfd, stacklen;
 	unsigned long *ip;
 	__u64 val;
 
@@ -261,7 +261,11 @@ static void print_map2(struct ksyms *ksyms, struct syms_cache *syms_cache,
         		if (!syms) {
         			fprintf(stderr, "failed to get syms\n");
         		} else {
-            		for (i = 0; i < env.perf_max_stack_depth && ip[i]; i++) {
+                    stacklen = -1;
+                    for (i = 0; i < env.perf_max_stack_depth && ip[i]; i++) {
+                        stacklen++;
+                    }
+            		for (i = stacklen; i >= 0; i--) {
             			sym = syms__map_addr(syms, ip[i]);
             			if (sym)
             				printf("%s;", sym->name);
@@ -274,9 +278,16 @@ static void print_map2(struct ksyms *ksyms, struct syms_cache *syms_cache,
         if (bpf_map_lookup_elem(sfd, &next_key.kernel_stack_id, ip) != 0) {
             printf("[Missed Kernel Stack]");
         } else {
+            stacklen = -1;
             for (i = 0; i < env.perf_max_stack_depth && ip[i]; i++) {
+                stacklen++;
+            }
+            for (i = stacklen; i >= 0; i--) {
                 ksym = ksyms__map_addr(ksyms, ip[i]);
-                printf("%s;", ksym ? ksym->name : "[Unknown]");
+                printf("%s", ksym ? ksym->name : "[Unknown]");
+                if (i > 0) {
+                    printf(";");
+                }
             }
         }
         printf("        %llu\n", val);
@@ -435,7 +446,7 @@ int main(int argc, char **argv)
 	 * We'll get sleep interrupted when someone presses Ctrl-C (which will
 	 * be "handled" with noop by sig_handler).
 	 */
-	sleep(10);
+	sleep(30);
 
 	print_map2(ksyms, syms_cache, obj);
 
