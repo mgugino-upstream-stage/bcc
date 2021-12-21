@@ -188,7 +188,7 @@ static int open_and_attach_perf_event(int freq, struct bpf_program *prog,
 	struct perf_event_attr attr = {
 		.type = PERF_TYPE_SOFTWARE,
 		.freq = 1,
-		.sample_period = freq,
+		.sample_period = 999,
 		.config = PERF_COUNT_SW_CPU_CLOCK,
 	};
 	int i, fd;
@@ -405,10 +405,11 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
+	obj->rodata->targ_tgid = env.pid;
 	/* initialize global data (filtering options) */
     /*
 	obj->rodata->targ_tgid = env.pid;
-	obj->rodata->targ_pid = env.tid;
+
 	obj->rodata->user_threads_only = env.user_threads_only;
 	obj->rodata->kernel_threads_only = env.kernel_threads_only;
 	obj->rodata->state = env.state;
@@ -436,9 +437,9 @@ int main(int argc, char **argv)
 		goto cleanup;
 	}
 
-    err = open_and_attach_perf_event(env.freq, obj->progs.do_perf_event, links);
-    if (err)
-        goto cleanup;
+	err = open_and_attach_perf_event(env.freq, obj->progs.do_perf_event, links);
+	if (err)
+		goto cleanup;
 
 	signal(SIGINT, sig_handler);
 
